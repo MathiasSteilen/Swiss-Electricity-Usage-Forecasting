@@ -1,13 +1,14 @@
 ---
-title: "Forecasting Swiss Energy Demand"
+title: "Forecasting Swiss Energy Demand With Supervised Machine Learning Methods"
 output: 
   html_document:
+    css: style.css
     theme: readable
     toc: TRUE
-    toc_depth: 3
+    toc_depth: 4
     toc_float: TRUE
     df_print: paged
-    code_folding: hide
+    code_folding: show
 editor_options: 
   chunk_output_type: console
 ---
@@ -41,18 +42,31 @@ library(timetk)
 ```
 
 ***
-### The Project
+#### What is this project about?
 ***
 
-TBD
+The goal of this project is to test the ability of supervised machine learning models, namely elastic net, gradient boosting and random forest, to predict end-user electricity consumption in Switzerland. The goal for the final product is a model that takes on a date in the future, as well as temperature data, and gives out an accurate estimate of aggregate electricity demand in Switzerland.
+
+The electricity demand data comes from [Swissgrid](https://www.swissgrid.ch/en/home/operation/grid-data/generation.html) and is denoted in $kwh$. Additionally, I will use historical temperature data as an additional predictor, which comes from [Swiss NBCN](https://data.geo.admin.ch/ch.meteoschweiz.klima/nbcn-tageswerte/liste-download-nbcn-d.csv). 
+To give a short idea of the structure of this document, I will
+
+- Procure and clean the data;
+- Explore the data;
+- Build and tune initial models;
+- Evaluate initial model performance to focus on one model;
+- Proceed with thorough tuning of one model;
+- Evaluate model performance in the out-of-sample period;
+- Present limitations.
 
 <br>
 
 ***
-### Data Procurement and Cleaning
+#### Data procurement and data cleaning
 ***
 
-Firstly, I start by loading the data. Looking at the first 5 rows:
+##### End-user electricity demand data
+
+Firstly, I start by loading the data from Swissgrid. Looking at the first 10 rows, it becomes clear that Swissgrid denotes the demand data in 15 minute intervals.
 
 ```{r, echo=FALSE}
 data <- readxl::read_excel("Data/5 EnergieEndverbrauch2009-2022.xlsx") %>% 
@@ -61,10 +75,10 @@ data <- readxl::read_excel("Data/5 EnergieEndverbrauch2009-2022.xlsx") %>%
 ```
 
 ```{r class.source = 'fold-show'}
-glimpse(data)
+head(data, n = 10)
 ```
 
-There are no missing values. However, the frequency is too granular. For modelling purposes, I want to aggregate to daily values and filter out everything after 2019 to exclude the effect of the pandemic.
+Luckily, there are no missing values. However, the frequency for modelling is is too granular. For this project, I would like to forecast energy demand going one year into the future, to see the ability of the model over longer seasonality time periods. Limitations of a forecasting time frame of this magnitude are presented in the last section. To proceed, I aggregate to daily values:
 
 ```{r class.source = 'fold-show'}
 data <- data %>% 
@@ -79,85 +93,138 @@ data <- data %>%
 summary(data)
 ```
 
-Now we have got ten years worth of training data (2009-2018) and one year worth of testing data (2019).
-
 <br>
 
 ##### Temperature Data
 
-Got this document from [opendata.swiss](https://opendata.swiss/de/dataset/klimamessnetz-tageswerte).
+The picture below shows a document I got from [opendata.swiss](https://opendata.swiss/de/dataset/klimamessnetz-tageswerte). 
 
 ```{r, echo=FALSE, out.width="100%"}
 knitr::include_graphics("Graphics/climatological network_desc.png")
 ```
 
-This link led to this document, detailing various weather stations:
+In it, I found a link (highlighted) that led to a file with various weather stations and their respective data download links:
 
 ```{r}
-read_csv("Data/liste-download-nbcn-d.csv")
+read_csv("Data/liste-download-nbcn-d.csv") %>% 
+  glimpse()
 ```
 
-Using the URLs to access the actual weather data for selected weather stations:
+Therefore, I could use these URLs to access the actual weather data for selected weather stations. I stored the data for all stations of interest in the tibble _weather_data_. The weather stations I have decided for are both in densely populated areas in northern/eastern/western Switzerland, as well as in the Alps, ensuring a good representation of the whole country.
 
 ```{r, eval=FALSE}
-temp_data <- read_csv("Data/liste-download-nbcn-d.csv") %>%
+weather_data <- read_csv("Data/liste-download-nbcn-d.csv") %>%
   filter(`station/location` %in% c("SMA", "GVE", "BAS", "DAV","LUG", "STG",
                                    "ALT", "NEU", "BER", "LUZ")) %>%
   mutate(station_data = map(`URL Previous years (verified data)`,
                             ~ read.csv(.x, sep = ";")),
          station_data = map(station_data,
-                            ~ select(.x, date, tre200d0)),
+                            ~ select(.x, date, tre200d0, rre150d0,
+                                     nto000d0, ure200d0)),
          station_data = map(station_data,
                             ~ na_if(.x, "-")),
          station_data = map(station_data,
                             ~ .x %>%
                               mutate(date = as.character(date),
-                                     tre200d0 = as.numeric(tre200d0)))) %>%
+                                     across(c(tre200d0, rre150d0,
+                                              nto000d0, ure200d0), as.numeric)))) %>%
   select(Station, `station/location`, Canton, station_data) %>%
   unnest(station_data) %>%
   mutate(date = ymd(date)) %>%
-  select(-Station, -Canton) %>%
-  pivot_wider(names_from = `station/location`, values_from = "tre200d0")
+  select(-Station, -Canton) %>% 
+  pivot_longer(c(tre200d0, rre150d0, nto000d0, ure200d0)) %>% 
+  mutate(name = case_when(
+    name == "tre200d0" ~ paste0(`station/location`,"_","meantemp"),
+    name == "rre150d0" ~ paste0(`station/location`,"_","precipitation"),
+    name == "nto000d0" ~ paste0(`station/location`,"_","cloudcoverage"),
+    name == "ure200d0" ~ paste0(`station/location`,"_","humidity"))) %>% 
+  select(-`station/location`) %>% 
+  pivot_wider(names_from = "name", values_from = "value")
 ```
 
 ```{r, eval=FALSE, echo=FALSE}
-write_csv(temp_data, "Data/temp_data.csv")
+write_csv(weather_data, "Data/weather_data.csv")
 ```
-
 
 ```{r, echo=FALSE}
-temp_data <- read_csv("Data/temp_data.csv")
+weather_data <- read_csv("Data/weather_data.csv")
 ```
 
-Left-join temperature data to the clean electricity usage data and create average temperature column:
+From here, I have demand and temperature data, which I can left-join. Additionally, I create averages of the weather readings over all stations, to get an "average Swiss" value. Namely, I create averages for:
+
+- temperature,
+- precipitation,
+- cloud coverage,
+- humidity.
+
+Starting by left-joining the data:
 
 ```{r}
-data <- data %>% 
-  left_join(temp_data, by = "date") %>% 
-  mutate(avg_temp = rowMeans(select(., ALT:STG)))
-
-summary(data)
+data <- data %>%
+  left_join(weather_data, by = "date")
 ```
 
-Data is clean and ready to be used for model training. I split it into pre- and post-COVID for later test of the model regarding robustness during corona years:
+Followed by the creation of the averages, for all of the four measures outlined in the bullet point list above:
+
+```{r, }
+data <- data %>% 
+  left_join(data %>% 
+              select(-c(mwh)) %>% 
+              pivot_longer(c(ALT_meantemp:STG_humidity)) %>% 
+              separate(col = name, into = c("location_code", "measure"), 
+                       sep = "_", remove = F) %>% 
+              group_by(date, measure) %>% 
+              summarise(avg = mean(value, na.rm = T)) %>% 
+              pivot_wider(names_from = measure, values_from = avg),
+            by = "date")
+```
+
+After doing this, I check for missing values again, because new weather data came in:
+
+```{r, warning=FALSE, message=FALSE}
+colMeans(is.na(data)) %>% 
+  tidy() %>% 
+  filter(x > 0) %>% 
+  transmute(variable = names, missing_percentage = x)
+```
+
+It becomes visible that not all stations have cloud coverage data for all, or even for any, points in time. Variables with low percentages of missing values can be imputed or left out at a later stage, but everything above half of the data missing is generally considered problematic. Therefore, in a next step, the variables with _missing_percentage_ larger than 50% are dropped:
+
+```{r, message=FALSE, warning=FALSE}
+data <- data %>% 
+  select(-c(colMeans(is.na(data)) %>% 
+              tidy() %>% 
+              filter(x > 0.5) %>% 
+              pull(names)))
+```
+
+Now, the final data is clean and ready to be used for model training. As a last step in the data cleaning process, I split it into pre- and post-COVID for the later test of the model regarding robustness during corona years, which is also part of the last section on limitations.
 
 ```{r}
-data <- data %>% 
-  filter(year <= 2019)
-
 data_corona <- data %>% 
   filter(year > 2019)
+
+data <- data %>% 
+  filter(year <= 2019)
 ```
 
-Only the data prior to 2019 is used for the modelling.
+There are 43 variables, 42 numeric predictors and 1 numeric target variable.
+
+```{r}
+glimpse(data)
+```
+
+At this stage, we are ready to move on to exploring the data.
 
 <br >
 
 ***
-### Exploratory Data Analysis
+#### Exploratory Data Analysis
 ***
 
-```{r, dpi=300, message=F, warning=FALSE}
+Exploratory data analysis (EDA) is a tool for exploring the relation between predictors and the target variable of a data set prior to building models. It is important to get a mental picture of the data and helps thinking about how to approach the problem.
+
+```{r, fig.width=8, fig.height=4.95, dpi=300, dev="png", warning=FALSE}
 data %>% 
   mutate(day_in_week = wday(date),
          day = wday(date, label = T),
@@ -168,7 +235,7 @@ data %>%
            factor(levels = c("Work Day", "Saturday", "Sunday"))) %>% 
   ggplot(aes(day_in_year, mwh, colour = weekend)) +
   geom_point(alpha = 0.4) +
-  labs(title = "On Sundays, You Shall Not Work: Swiss End-User Electricity Consumption",
+  labs(title = "Swiss End-User Electricity Consumption",
        subtitle = "For each day in the year (1-365), 11 daily consumption points from the period 2009 to 2019 are plotted.\nColouring indicates if a day lies on a weekend or not.",
        caption = "Data Source: Swissgrid, Period 2009-2019",
        x = "Day Of The Year (1-365)",
@@ -177,7 +244,7 @@ data %>%
   scale_x_continuous(breaks = c(1, seq(50,366,50))) +
   scale_y_continuous(labels = comma_format(suffix = " MWh")) +
   ggsci::scale_colour_jama() +
-  theme_light() +
+  theme_bw() +
   theme(plot.title = element_text(face = "bold", size = 14),
         plot.subtitle = element_text(face = "italic", size = 10,
                                      colour = "grey50"),
@@ -186,18 +253,18 @@ data %>%
         legend.position = "right")
 ```
 
-From the above chart, it becomes clear that the demand follows a strong intra-year pattern. Additionally, there is a seasonality component contained within each week. Monthly patterns are not discernible.
+This first chart shows electricity consumption as a function of the day of the year (number 1 to 366) over the period 2009-2019. Clearly, electricity demand peaks in winter and is lowest in summer. Furthermore, there are fixed effects for work days and the two days on the weekends. The conclusion from this chart is that including dummies for day of the week and day of the year is likely important, as well as accounting for intra-year seasonality.
 
-```{r, dpi=300, message=F, warning=FALSE}
+```{r, fig.width=8, fig.height=3, dpi=300, dev="png", warning=FALSE, message=FALSE}
 data %>% 
   filter(year == 2010) %>%
   ggplot(aes(date, mwh)) +
-  geom_line() +
-  labs(title = "Daily Energy Consumption in 2010",
+  geom_line(colour = "dodgerblue", size = 0.75) +
+  labs(title = "Swiss Daily Energy Consumption in 2010",
        y = "Daily Consumption",
        x = NULL) +
   scale_y_continuous(labels = comma_format(suffix = " MWh")) +
-  theme_light() +
+  theme_bw() +
   theme(plot.title = element_text(face = "bold", size = 14),
         plot.subtitle = element_text(face = "italic", size = 10,
                                      colour = "grey50"),
@@ -206,40 +273,20 @@ data %>%
         legend.position = "right")
 ```
 
-Temperature development at different stations:
+Singling out one year randomly, 2010 for instance, reveals even more than intra-year seasonality. Additionally, there is intra-week seasonality, which needs to be accounted for, as seen before.
 
-```{r}
+```{r, fig.width=8, fig.height=4.95, dpi=300, dev="png", warning=FALSE, message=FALSE}
 data %>% 
   filter(year == 2019) %>% 
-  select(-c(year, day_in_year, mwh)) %>% 
+  select(date, meantemp, humidity, precipitation, cloudcoverage) %>% 
   pivot_longer(-date) %>% 
   ggplot(aes(date, value, colour = name)) +
-  geom_line(size = 0.75, alpha = 0.5) +
-  theme_bw()
-```
-
-Average temperature development and electricity usage:
-
-```{r}
-data %>% 
-  select(date, avg_temp, mwh) %>%  
-  mutate(day_in_week = wday(date),
-         day = wday(date, label = T),
-         weekend = case_when(
-           day_in_week %in% c(7) ~ "Saturday",
-           day_in_week %in% c(1) ~ "Sunday",
-           TRUE ~ "Work Day") %>% 
-           factor(levels = c("Work Day", "Saturday", "Sunday"))) %>% 
-  ggplot(aes(avg_temp, mwh, colour = weekend)) +
-  geom_point(alpha = 0.5, size = 1) +
-  geom_smooth(size = 0.5, se = F) +
-  labs(title = "Relation Between Energy Usage And Temperature",
-       subtitle = "TBD",
-       y = NULL,
-       x = "Average Temperature",
+  geom_line(size = 0.75, alpha = 0.75) +
+  facet_wrap(~ name, scales = "free_y") +
+  labs(title = "Weather Measurements in 2019",
+       y = "Measurement",
+       x = NULL,
        colour = NULL) +
-  scale_y_continuous(labels = scales::comma_format(suffix = " MWh")) +
-  scale_x_continuous(labels = scales::comma_format(suffix = "°")) +
   ggsci::scale_colour_jama() +
   theme_bw() +
   theme(plot.title = element_text(face = "bold", size = 14),
@@ -248,18 +295,53 @@ data %>%
         plot.caption = element_text(face = "italic", size = 9,
                                     colour = "grey50"),
         legend.position = "right")
-
 ```
+
+Looking at the chart above, only temperature shows visible seasonality. All other variables look erratic by themselves. However, let's look at a scatter plot to see potential linear relationships:
+
+```{r, fig.width=8, fig.height=6, dpi=300, dev="png", warning=FALSE, message=FALSE}
+data %>% 
+  select(date, meantemp, cloudcoverage, humidity, precipitation, mwh) %>% 
+  pivot_longer(-c(date, mwh)) %>% 
+  mutate(day_in_week = wday(date),
+         day = wday(date, label = T),
+         weekend = case_when(
+           day_in_week %in% c(7) ~ "Saturday",
+           day_in_week %in% c(1) ~ "Sunday",
+           TRUE ~ "Work Day") %>% 
+           factor(levels = c("Work Day", "Saturday", "Sunday"))) %>% 
+  ggplot(aes(value, mwh, colour = weekend)) +
+  geom_point(alpha = 0.5, size = 0.75) +
+  geom_smooth(size = 0.75, se = F) +
+  facet_wrap(~ name, scales = "free_x") +
+  labs(title = "Relation Between Weather Conditions And Electricity Demand",
+       subtitle = "TBD",
+       y = "Daily Electricity Demand",
+       x = "Measurement",
+       colour = NULL) +
+  scale_y_continuous(labels = scales::comma_format(suffix = " MWh")) +
+  scale_x_continuous(labels = scales::comma_format()) +
+  ggsci::scale_colour_jama() +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(face = "italic", size = 10,
+                                     colour = "grey50"),
+        plot.caption = element_text(face = "italic", size = 9,
+                                    colour = "grey50"),
+        legend.position = "right")
+```
+
+The above chart reveals the relationships between weather measurements and the target variable electricity demand better. There is a very strong negative relationship between temperature and the target, with a non-linearity as soon as higher degree Celsius are attained. More clouds lead to higher demand. The same holds for humidity. Lastly, precipitation does not show a clear picture, albeit slightly negative. It has to be noted that the last three predictors leave much more variance unexplained than temperature.
+
+After exploring the predictors in the data, I can move on to building initial models.
 
 <br>
 
 ***
-### Building A Model
+#### Building initial models
 ***
 
-In this post, I am not going to use usual time series forecasting techniques, but I'll rely on machine learning methods instead.
-
-Creating splits:
+Before diving into hyperparameter tuning of the models, I will create three simple models using default parameters to judge the potential of them. The first step in modelling is creating the splits. In this case, the assignment is not random, but by time, as we are dealing with time series. I will use 10 years for training and predict on the holdout, which will be 2019. Additionally, I initiate the folds for cross-validation of the model metrics at a later stage in the tuning process.
 
 ```{r class.source = 'fold-show'}
 dt_split <- data %>% 
@@ -273,7 +355,7 @@ folds <- vfold_cv(dt_train, v = 5)
 
 Visualising the train/test split, it becomes very clear, what the goal will be: Forecasting the year 2019, for which we have the true data and are able to compute metrics to evaluate model performance.
 
-```{r, dpi=300, fig.height=4.95, fig.width=8}
+```{r, fig.width=8, fig.height=3, dpi=300, dev="png", warning=FALSE, message=FALSE}
 bind_rows(
   dt_train %>% mutate(id = "training"),
   dt_test %>% mutate(id = "testing")
@@ -281,8 +363,11 @@ bind_rows(
   ggplot(aes(date, mwh, colour = id)) +
   geom_line() +
   scale_colour_manual(values = c("firebrick", "dodgerblue")) +
-  labs(title = "Training/Testing Split") +
-  scale_y_continuous(labels = comma_format()) +
+  labs(title = "Training/Testing Split", 
+       y = NULL,
+       x = NULL,
+       colour = NULL) +
+  scale_y_continuous(labels = comma_format(suffix = " MWh")) +
   theme_light() +
   theme(plot.title = element_text(face = "bold", size = 14),
         plot.subtitle = element_text(face = "italic", size = 10,
@@ -292,13 +377,23 @@ bind_rows(
         legend.position = "right")
 ```
 
-Creating a recipe for data preprocessing and squeezing as much information from the date column as possible.
+The next step in the modelling process with the package _tidymodels_ is creating the recipe for data preprocessing. As I don't have a great amount of predictors, only date and weather information, I will try to squeeze as much information from the date column as possible. Namely, I
+
+- use _step_date_ to get factor columns indicating day and month;
+- use _step_holiday_ to create dummy variables for official holidays in Switzerland, on which business is interrupted;
+- impute missing values in numeric predictors with the mean of the respective variable;
+- fill missing values in nominal predictors with "unknown";
+- create new variables for number of month, semester, weekday, number of the week, quarter and a dummy variable for christmas holidays;
+- create dummy variables from nominal predictors (not for random forest, as the model can deal with it);
+- remove zero variance predictors.
 
 ```{r class.source = 'fold-show'}
 model_rec <- recipe(mwh ~ .,
                     data = dt_train) %>%
   step_date(date) %>%
   step_holiday(date, holidays = timeDate::listHolidays("CH")) %>%
+  step_impute_mean(all_numeric_predictors()) %>% 
+  step_unknown(all_nominal_predictors()) %>% 
   step_mutate(month = lubridate::month(date),
               year_half = lubridate::semester(date) %>% as.factor,
               week_day = lubridate::wday(date),
@@ -308,11 +403,33 @@ model_rec <- recipe(mwh ~ .,
                                       1, 0),
               day_in_year = as.factor(day_in_year)) %>% 
   step_rm(date) %>% 
-  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
   step_zv()
 
-model_rec %>% prep() %>% juice() %>% glimpse()
+rf_rec <- recipe(mwh ~ .,
+                 data = dt_train) %>%
+  step_date(date) %>%
+  step_holiday(date, holidays = timeDate::listHolidays("CH")) %>%
+  step_impute_mean(all_numeric_predictors()) %>% 
+  step_unknown(all_nominal_predictors()) %>% 
+  step_mutate(month = lubridate::month(date),
+              year_half = lubridate::semester(date) %>% as.factor,
+              week_day = lubridate::wday(date),
+              week_in_year = lubridate::week(date),
+              quarter = lubridate::quarter(date),
+              date_christmas = ifelse(between(day_in_year, 358, 366),
+                                      1, 0),
+              day_in_year = as.factor(day_in_year)) %>% 
+  step_rm(date) %>%
+  step_zv()
 ```
+
+```{r, echo=FALSE, eval=FALSE}
+model_rec %>% prep() %>% juice() %>% glimpse()
+rf_rec %>% prep() %>% juice() %>% glimpse()
+```
+
+In a next step, I specify the three models, that I want to use. They are elastic net, gradient boosting and random forest. Elastic net is a linear combination of ridge and lasso regression, which are linear regressions with additional penalty terms. Gradient boosting and random forest are tree ensemble methods with different algorithm, which I will not explain in detail in this project, as the application and not the definition of these methods stands in focus.
 
 ```{r class.source = 'fold-show'}
 en_spec <- linear_reg(penalty = 0.02, mixture = 0.5) %>% 
@@ -328,7 +445,7 @@ rf_spec <- rand_forest(trees = 500) %>%
   set_mode("regression")
 ```
 
-Without using resamples or hyperparameter tuning, the workflows can immediately be entirely fit to the training data.
+As I am not tuning hyperparameters at this stage yet and just set some default parameters, the workflows can immediately be entirely fit to the training data.
 
 ```{r class.source = 'fold-show', eval=FALSE}
 en_wf_fit <- workflow() %>% 
@@ -342,7 +459,7 @@ xg_wf_fit <- workflow() %>%
   fit(dt_train)
 
 rf_wf_fit <- workflow() %>% 
-  add_recipe(model_rec) %>% 
+  add_recipe(rf_rec) %>% 
   add_model(rf_spec) %>% 
   fit(dt_train)
 ```
@@ -361,45 +478,27 @@ rf_wf_fit <- readRDS("Models/rf_wf_fit.rds")
 
 
 ***
-### Evaluating Model Performance
+#### Evaluating initial model performance
 ***
 
-With the fitted models, I can now make predictions on the holdout data:
+With the fitted initial models, I can now make predictions on the holdout data. I use the _predict_ function in combination with the _map_ function, which enables me to run each elements in a list (for instance a column with type list in a tibble) through a given function.
 
 ```{r class.source='fig-show'}
-models <- tibble(
+predictions <- tibble(
   type = c("RF", "EN", "GB"),
   wflow = list(rf_wf_fit, en_wf_fit, xg_wf_fit),
   predictions = map(.x = wflow, .f = ~ augment(.x, dt_test))
-)
-
-models
-```
-
-From this, let's extract the predictions for each model:
-
-```{r class.source='fig-show'}
-predictions <- models %>% 
+) %>% 
   select(-wflow) %>% 
   unnest(predictions)
 
-predictions
+predictions %>% select(date, mwh, .pred)
 ```
 
-Defining a set of metric, I can now compare the performance of the three models with default parameters:
+Now that I have the predictions on the holdout data set, I can compute evaluation metrics to compare the performance of each model. Clearly, gradient boosting and random forest have outperformed the elastic net.
 
-```{r, dpi=300, fig.height=4.95, fig.width=8, warning=FALSE, message=FALSE}
+```{r, dpi=300, fig.height=3, fig.width=8, warning=FALSE, message=FALSE, warning=FALSE}
 evaluation_metrics <- metric_set(rsq, rmse, mae)
-
-predictions %>% 
-  group_by(type) %>% 
-  evaluation_metrics(truth = mwh, estimate = .pred) %>% 
-  ggplot(aes(type, .estimate, colour = type)) +
-  geom_point(size = 3, shape = 18) +
-  facet_wrap(~ .metric, scales = "free_y") +
-  theme_light() +
-  theme(legend.position = "none",
-        panel.grid.major.x = element_blank())
 
 predictions %>% 
   group_by(type) %>% 
@@ -409,9 +508,9 @@ predictions %>%
   arrange(-rsq)
 ```
 
-Clearly, random forest and gradient boosting have outperformed elastic net.
+Additionally, I plot the predictions and the actual values in a scatter plot:
 
-```{r, dpi=300, fig.height=4.95, fig.width=8}
+```{r, dpi=300, fig.height=2, fig.width=8, warning=FALSE, message=FALSE, warning=FALSE}
 predictions %>% 
   ggplot(aes(mwh, .pred)) +
   geom_point(alpha = 0.2, colour = "midnightblue", size = 2) +
@@ -423,27 +522,15 @@ predictions %>%
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 ```
 
-```{r, dpi=300, fig.height=4.95, fig.width=8}
-predictions %>% 
-  rename(actual = mwh, prediction = .pred) %>% 
-  select(type, date, actual, prediction) %>% 
-  pivot_longer(-c(type, date)) %>% 
-  ggplot(aes(date, value, colour = name)) +
-  geom_line(size = 0.5) +
-  labs(x = NULL,
-       y = "mwh",
-       colour = NULL) +
-  facet_wrap(~ type, ncol = 1) +
-  ggsci::scale_colour_jama() +
-  scale_y_continuous(labels = scales::comma_format()) +
-  theme_bw()
-```
+Ideally, all points would lie on the diagonal line from the origin. The spread indicates that elastic net has performed worse than tree-based ensemble models. Furthermore, the gradient boosting has performed better than the random forest. Given these interim results, I will continue with the tuning for both gradient boosting and random forest and abandon the idea of using elastic net.
 
 ***
-### Doubling Down On Tree Ensembles
+#### Building final models
 ***
 
-With the knowledge from above, let's now tune hyperparameters for a random forest and gradient boosting model, to see whether we can fill the gaps of the standard models.
+With the knowledge from above, I will now tune hyperparameters for a random forest and gradient boosting model, to see whether I can fill the gaps of the initial models.
+
+For the random forest model, I specify all three parameters, _mtry_, _min_n_ and _trees_ to be tuned. I also reset the workflow and add the recipe and the model specification. Lastly, I initiate the grid with the values which will be used for hyperparameter tuning. The use of a latin hypercube design ideally chooses hyperparameters to maximally fill out the potential hyperparameter space. This ensures efficient tuning with lower numbers of models to be tried. For 3 hyperparameters, I use 50 configurations, which will be fitted on 5 folds, therefore resulting in 250 fits.
 
 ```{r}
 rf_spec <- rand_forest(mtry = tune(),
@@ -453,7 +540,7 @@ rf_spec <- rand_forest(mtry = tune(),
   set_mode("regression")
 
 rf_wflow <- workflow() %>% 
-  add_recipe(model_rec) %>% 
+  add_recipe(rf_rec) %>% 
   add_model(rf_spec)
 
 rf_grid <- grid_latin_hypercube(finalize(mtry(), dt_train),
@@ -461,6 +548,8 @@ rf_grid <- grid_latin_hypercube(finalize(mtry(), dt_train),
                                 trees(),
                                 size = 50)
 ```
+
+I approach the gradient boosting model with the same approach. For 6 hyperparameters, I use 100 model configurations which will be fitted on all 5 folds each, resulting in 500 fits.
 
 ```{r}
 gb_spec <- boost_tree(mtry = tune(),
@@ -485,14 +574,14 @@ gb_grid <- grid_latin_hypercube(finalize(mtry(), dt_train),
                                 size = 100)
 ```
 
+With everything specified, I proceed with the actual tuning. I use parallel processing with a function obtained from Stackoverflow [here](https://stackoverflow.com/questions/64519640/error-in-summary-connectionconnection-invalid-connection) and a function from the _doParallel_ package, which enables me to open and close 6 cores instead of 1, speeding up the training process tremendously. The actual tuning function takes on the workflow, the grid with the parameters and the cross-validation resamples.
+
 ```{r, eval=FALSE}
 # Random Forest
 unregister_dopar <- function() {
   env <- foreach:::.foreachGlobals
   rm(list=ls(name=env), pos=env)
 }
-
-start_time <- Sys.time()
 
 cl <- makePSOCKcluster(6)
 registerDoParallel(cl)
@@ -504,16 +593,11 @@ rf_tune <- tune_grid(object = rf_wflow,
 stopCluster(cl)
 unregister_dopar()
 
-end_time <- Sys.time()
-end_time - start_time
-
 # Gradient Boosting
 unregister_dopar <- function() {
   env <- foreach:::.foreachGlobals
   rm(list=ls(name=env), pos=env)
-  }
-
-start_time <- Sys.time()
+}
 
 cl <- makePSOCKcluster(6)
 registerDoParallel(cl)
@@ -524,9 +608,6 @@ gb_tune <- tune_grid(object = gb_wflow,
 
 stopCluster(cl)
 unregister_dopar()
-
-end_time <- Sys.time()
-end_time - start_time
 ```
 
 ```{r, echo=FALSE, eval=FALSE}
@@ -539,7 +620,7 @@ rf_tune <- readRDS("Models/rf_tune.rds")
 gb_tune <- readRDS("Models/gb_tune.rds")
 ```
 
-Comparing the model performances of both random forest and gradient boosting:
+After this function has run, I can now compare the tuning results. Random forest has performed better after tuning, with an increase of $R^2$ of about 2 percentage points. 
 
 ```{r}
 rf_tune %>% 
@@ -551,32 +632,52 @@ gb_tune %>%
   show_best(metric = "rsq")
 ```
 
-Gradient boosting performed slightly better. Therefore, it will be the final model.
+Gradient boosting performed slightly better, but the improvement is likely statistically and economically insignificant, so we can call it the same.
 
-Fitting onto the entire training data set:
+With these results, I fit the models with the best configurations from in-sample training onto the entire training data set from the split initiated at the very beginning:
 
 ```{r, eval=FALSE}
 gb_final_fit <- gb_wflow %>% 
   finalize_workflow(select_best(gb_tune, metric = "rsq")) %>% 
   last_fit(dt_split)
+
+rf_final_fit <- rf_wflow %>% 
+  finalize_workflow(select_best(rf_tune, metric = "rsq")) %>% 
+  last_fit(dt_split)
 ```
 
 ```{r, echo=FALSE, eval=FALSE}
 saveRDS(gb_final_fit, "Models/gb_final_fit.rds")
+saveRDS(rf_final_fit, "Models/rf_final_fit.rds")
 ```
 
 ```{r, echo=FALSE}
 gb_final_fit <- readRDS("Models/gb_final_fit.rds")
+rf_final_fit <- readRDS("Models/rf_final_fit.rds")
 ```
 
-Evaluating out-of-sample performance:
+After this, the final models are done.
 
-```{r}
-gb_final_fit %>% 
-  collect_predictions() %>% 
+***
+#### Evaluating final model performance
+***
+
+With the final models, I can now finally explore the performance on the out-of-sample data, which was held out from model training.
+
+```{r, fig.width=8, fig.height=4, dpi=300, dev="png", warning=FALSE, message=FALSE}
+bind_rows(
+  rf_final_fit %>% 
+    collect_predictions() %>% 
+    mutate(model = "Random Forest"),
+  gb_final_fit %>% 
+    collect_predictions() %>% 
+    mutate(model = "Gradient Boosting")
+) %>% 
+  select(model, mwh, .pred) %>% 
   ggplot(aes(mwh, .pred)) +
   geom_point(alpha = 0.5, size = 1.5, colour = "midnightblue") +
-  labs(title = "Out-Of-Sample Gradient Boosting Model Performance",
+  facet_wrap(~ model) +
+  labs(title = "Out-Of-Sample Model Performance",
        y = "Estimate",
        x = "Truth") +
   geom_abline(colour = "grey50", lty = "dashed") +
@@ -585,28 +686,48 @@ gb_final_fit %>%
   theme_bw() +
   theme(plot.title = element_text(size = 14, face = "bold"),
         plot.subtitle = element_text(face = "italic", size = 12,
-                                     colour = "grey50"))
+                                     colour = "grey50"),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 ```
 
-Out-of-sample metrics:
+From the above chart, it becomes visually clear that the gradient boosting shows fewer outliers than the random forest, explaining the better $R^2$ of the first. 
+
+Looking at out-of-sample model evaluation metrics in the table below, it looks like the gradient boosting model performed better than the random forest, although both performed very well.
 
 ```{r}
-gb_final_fit %>% 
-  collect_predictions() %>% 
-  evaluation_metrics(truth = mwh, estimate = .pred)
+bind_rows(
+  rf_final_fit %>% 
+    collect_predictions() %>% 
+    mutate(model = "Random Forest"),
+  gb_final_fit %>% 
+    collect_predictions() %>% 
+    mutate(model = "Gradient Boosting")
+) %>% 
+  group_by(model) %>% 
+  evaluation_metrics(truth = mwh, estimate = .pred) %>% 
+  select(-.estimator) %>% 
+  pivot_wider(names_from = ".metric", values_from = ".estimate")
 ```
 
-Out-of-sample time series:
+At this stage, I can plot the actual time series against the predictions of the model, in order to see difference in time:
 
-```{r, fig.width=10, fig.height=3, dpi=320}
-gb_final_fit %>% 
-  extract_workflow() %>% 
-  augment(dt_test) %>% 
-  transmute(date, prediction = .pred, actual = mwh) %>% 
-  pivot_longer(-date) %>% 
+```{r, fig.width=8, fig.height=4.95, dpi=300, dev="png", warning=FALSE, message=FALSE}
+bind_rows(
+  gb_final_fit %>% 
+    extract_workflow() %>% 
+    augment(dt_test) %>% 
+    mutate(model = "Gradient Boosting"),
+  rf_final_fit %>% 
+    extract_workflow() %>% 
+    augment(dt_test) %>% 
+    mutate(model = "Random Forest")
+) %>% 
+  transmute(date, model, prediction = .pred, actual = mwh) %>% 
+  pivot_longer(-c(date, model)) %>% 
   ggplot(aes(date, value, colour = name)) +
   geom_line(alpha = 0.75, size = 0.75) +
-  labs(title = "Out-of-sample Time Series",
+  facet_wrap(~ model, nrow = 2) +
+  labs(title = "Out-Of-Sample Time Series",
        y = NULL,
        x = NULL,
        colour = NULL) +
@@ -618,7 +739,7 @@ gb_final_fit %>%
                                      colour = "grey50"))
 ```
 
-Mean Absolute Error as percentage of average time holdout target value:
+Both models have a very good fit. The gradient boosting model has slightly higher accuracy on most weeks than random forest. At this stage, I would like to know what the average error in percentage terms of the model is. Therefore, I calculate the mean absolute error and divide it by the mean of the time series:
 
 ```{r}
 mean_abs_error <- gb_final_fit %>%
@@ -636,63 +757,188 @@ mean_mwh <- gb_final_fit %>%
 mean_abs_error/mean_mwh
 ```
 
-Deviation by date:
+The model has an average deviation of less than 2%, which is very good considering the only predictors being date and weather.
 
-```{r}
-gb_final_fit %>% 
-  extract_workflow() %>% 
-  augment(dt_test) %>% 
+Next, I want to look at the errors (delta) of the predictions over the actual values as a function of time:
+
+```{r, fig.width=8, fig.height=4.95, dpi=300, dev="png", warning=FALSE, message=FALSE}
+bind_rows(
+  gb_final_fit %>% 
+    extract_workflow() %>% 
+    augment(dt_test) %>% 
+    mutate(model = "Gradient Boosting"),
+  rf_final_fit %>% 
+    extract_workflow() %>% 
+    augment(dt_test) %>% 
+    mutate(model = "Random Forest")
+) %>% 
   mutate(delta = .pred/mwh-1,
-         exceedance = ifelse(abs(delta) > 0.05, 1, 0) %>% as.factor()) %>% 
+         exceedance = ifelse(abs(delta) > 0.05, 
+                             ">5%", "<=5%") %>% as.factor()) %>% 
+  ungroup() %>% 
   ggplot(aes(date, delta, colour = exceedance)) +
-  geom_point() +
-  ggsci::scale_colour_jama()
+  geom_point(alpha = 0.5) +
+  annotate("rect", xmin = ymd("20180101"), xmax = ymd("20201231"),
+           ymin = -0.05, ymax = 0.05, alpha = .1, fill = "dodgerblue") +
+  geom_hline(yintercept = 0.05, colour = "dodgerblue", lty = "dashed") +
+  geom_hline(yintercept = -0.05, colour = "dodgerblue", lty = "dashed") +
+  facet_wrap(~ model, nrow = 2) +
+  labs(title = "Out-Of-Sample Delta In Percent",
+       subtitle = "Delta calculated as deviation of the estimate from the actual value.",
+       y = "Delta",
+       x = NULL,
+       colour = "Exceedance") +
+  scale_colour_manual(values = c("dodgerblue", "firebrick")) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     limits = c(-0.25, 0.25)) +
+  coord_cartesian(xlim = c(ymd("20190101"), ymd("20191231"))) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"),
+        legend.position = "bottom")
 ```
 
+In the above chart, I have plotted the relative deviation of the predictions versus the actual values. The blue confidence band marks the 5% relative deviation interval. As can be seen, most values lie within the interval, but sometimes, outliers cannot be avoided from either model. Likely, these are holidays that vary each year, like Easter.
+
+Lastly, I would like to see how the model performs against just predicting the mean of each day from the training data:
+
 ```{r}
-gb_final_fit %>% 
-  extract_workflow() %>% 
-  augment(dt_test) %>% 
-  mutate(delta = .pred/mwh-1) %>% 
-  transmute(day = yday(date), delta) %>% 
-  acf()
+data %>% 
+  group_by(day_in_year) %>% 
+  summarise(predicting_daily_mean = mean(mwh)) %>% 
+  ungroup() %>% 
+  head(365) %>% 
+  bind_cols(
+    gb_final_fit %>% 
+      extract_workflow() %>% 
+      predict(dt_test) %>% 
+      rename(gradient_boosting = .pred)
+  ) %>% 
+  bind_cols(dt_test %>% select(date, mwh)) %>% 
+  pivot_longer(-c(day_in_year, mwh, date)) %>% 
+  group_by(name) %>% 
+  evaluation_metrics(truth = mwh, estimate = value) %>% 
+  select(-.estimator) %>% 
+  pivot_wider(names_from = .metric, values_from = .estimate)
 ```
 
-Which days still show high deviation? Find out what happened on these days in 2019
+From the performance metrics, it becomes abundantly clear that the model performance much better than the mean prediction. The same thing visualised as a time series:
 
-```{r}
+```{r, fig.width=8, fig.height=3, dpi=300, dev="png", warning=FALSE, message=FALSE}
+data %>% 
+  group_by(day_in_year) %>% 
+  summarise(predicting_daily_mean = mean(mwh)) %>% 
+  ungroup() %>% 
+  head(365) %>% 
+  bind_cols(
+    gb_final_fit %>% 
+      extract_workflow() %>% 
+      predict(dt_test) %>% 
+      rename(gradient_boosting = .pred)
+  ) %>% 
+  bind_cols(dt_test %>% transmute(date, actuals = mwh)) %>% 
+  pivot_longer(-c(day_in_year, date)) %>% 
+  ggplot(aes(date, value, colour = name)) +
+  geom_line(alpha = 0.75, size = 0.5) +
+  labs(title = "Out-of-sample Time Series",
+       y = NULL,
+       x = NULL,
+       colour = NULL) +
+  ggsci::scale_colour_jama() +
+  scale_y_continuous(labels = scales::comma_format(suffix = " MWh")) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"))
+```
+
+Clearly, the gradient boosting model shows solid performance and could be used on future data points, after retraining on newer data.
+
+<br>
+
+***
+#### Limitations
+***
+
+Before the end, I want to include some limitations where the model might show deficiencies.
+
+<br>
+
+##### Performance in unforeseen circumstances
+
+Performance of predictive model relies heavily on the continuance of the relation of predictors with the target variable. If the relation breaks down due to unforeseen circumstances like a pandemic, then the model will act as if this event had never happened.
+
+Let me (shortly) demonstrate this, using the data from 2020-2022, which I held out at the beginning for this exact purpose. I can now send this new data through the model and make predictions. Looking at the time series reveals the problem:
+
+```{r, fig.width=8, fig.height=2, dpi=300, dev="png", warning=FALSE, message=FALSE}
 gb_final_fit %>% 
   extract_workflow() %>% 
-  augment(dt_test) %>% 
+  augment(data_corona) %>%
+  transmute(date, prediction = .pred, actual = mwh) %>% 
+  pivot_longer(-c(date)) %>% 
+  ggplot(aes(date, value, colour = name)) +
+  geom_line(alpha = 0.75, size = 0.5) +
+  labs(title = "Out-Of-Sample Time Series: Corona Period",
+       y = NULL,
+       x = NULL,
+       colour = NULL) +
+  ggsci::scale_colour_jama() +
+  scale_y_continuous(labels = scales::comma_format(suffix = " MWh")) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"))
+```
+
+The model predicted as if the pandemic had never hit. Without retraining and lookback on past values, the model completely mispredicts the future, which is especially grave during the first lockdown period as shown in the chart below. Looking at the delta over time shows this lockdown period nicely.
+
+```{r, fig.width=8, fig.height=4, dpi=300, dev="png", warning=FALSE, message=FALSE}
+gb_final_fit %>% 
+  extract_workflow() %>% 
+  augment(data_corona) %>%
+  group_by() %>% 
   mutate(delta = .pred/mwh-1,
-         exceedance = ifelse(abs(delta) > 0.05, 1, 0) %>% as.factor()) %>% 
-  filter(exceedance == 1) %>% 
-  select(date, exceedance) %>% 
-  print(n = 100)
+         exceedance = ifelse(abs(delta) > 0.05, 
+                             ">5%", "<=5%") %>% as.factor()) %>% 
+  ungroup() %>% 
+  ggplot(aes(date, delta, colour = exceedance)) +
+  geom_point(alpha = 0.5) +
+  annotate("rect", xmin = ymd("20180101"), xmax = ymd("20251231"),
+           ymin = -0.05, ymax = 0.05, alpha = .1, fill = "dodgerblue") +
+  annotate("rect", xmin = ymd("20200310"), xmax = ymd("20200628"),
+           ymin = -1, ymax = 1, alpha = .1, fill = "firebrick") +
+  geom_hline(yintercept = 0.05, colour = "dodgerblue", lty = "dashed") +
+  geom_hline(yintercept = -0.05, colour = "dodgerblue", lty = "dashed") +
+  labs(title = "Out-Of-Sample Delta In Percent: Corona Period",
+       subtitle = "Delta calculated as deviation of the estimate from the actual value.\nLockdown period in 2020 indicated by red shading.",
+       y = "Delta",
+       x = NULL,
+       colour = "Exceedance") +
+  scale_colour_manual(values = c("dodgerblue", "firebrick")) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  coord_cartesian(xlim = c(ymd("20200101"), ymd("20220101")),
+                  ylim = c(-0.17,0.32)) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"),
+        legend.position = "bottom")
 ```
 
-The tuning managed to improve metrics.
+The cloud of red points during the first lockdown shows the model overestimating demand. This abnormal effect has not happened again as the Swiss government have made a strong effort to keep the economy running, however, the period of a couple of months showed the vulnerability of the model. It must be noted that this vulnerability is not unique to this model, virtually all models inferring from the past are subject to it.
 
-<!-- How to construct confidence intervals? -->
+<br>
 
-```{r}
-gb_final_fit %>%
-  extract_workflow() %>% 
-  augment(dt_test) %>% 
-  mutate(lower_conf = .pred*(1-mean_abs_error/mean_mwh),
-         higher_conf = .pred*(1+mean_abs_error/mean_mwh)) %>%  
-  ggplot() +
-  geom_line(aes(date, .pred), colour = "midnightblue", alpha = 0.5) +
-  geom_line(aes(date, mwh), colour = "firebrick") +
-  geom_ribbon(aes(x = date, ymin = lower_conf, ymax = higher_conf), 
-              fill = "midnightblue", alpha = 0.25) +
-  theme_light()
-```
+##### General usability in the energy sector
 
+In practice, the forecast is usually much shorter than one year. Production is adjusted almost in real-time, so forecasts over long time-periods are not useful. Additionally, changing conditions of the predictors have to be accounted for, which is more feasible in real-time, short-term models. This goes hand in hand with the next point.
 
-I hope this post has been interesting to you. In case of constructive feedback or if you want to exchange about this or a related topic, feel free to reach out.
+<br>
 
-Thank you for reading.
+##### Weather readings
+
+The weather readings for the training of this model were actual values. In practice, when predicting energy demand, weather forecasts are part of the features, instead of actual values. This additional uncertainty will likely impact model performance negatively in practice.
 
 &nbsp;
 <hr />
