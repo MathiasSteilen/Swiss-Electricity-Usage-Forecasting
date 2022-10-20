@@ -47,7 +47,7 @@ library(timetk)
 
 The goal of this project is to test the ability of supervised machine learning models, namely elastic net, gradient boosting and random forest, to predict end-user electricity consumption in Switzerland. The goal for the final product is a model that takes on a date in the future, as well as temperature data, and gives out an accurate estimate of aggregate electricity demand in Switzerland.
 
-The electricity demand data comes from [Swissgrid](https://www.swissgrid.ch/en/home/operation/grid-data/generation.html) and is denoted in $kwh$. Additionally, I will use historical temperature data as an additional predictor, which comes from [Swiss NBCN](https://data.geo.admin.ch/ch.meteoschweiz.klima/nbcn-tageswerte/liste-download-nbcn-d.csv). 
+The electricity demand data comes from [Swissgrid](https://www.swissgrid.ch/en/home/operation/grid-data/generation.html) and is denoted in $kwh$. Additionally, I will use historical weather data as an additional predictor, which comes from [Swiss NBCN](https://data.geo.admin.ch/ch.meteoschweiz.klima/nbcn-tageswerte/liste-download-nbcn-d.csv). 
 To give a short idea of the structure of this document, I will
 
 - Procure and clean the data;
