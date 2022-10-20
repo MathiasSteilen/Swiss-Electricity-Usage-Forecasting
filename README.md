@@ -8,7 +8,7 @@ The detailed report of this project was hosted on [RPubs](https://rpubs.com/Math
 
 ### Description
 
-The goal of this project is to test the ability of supervised machine learning models, namely elastic net, gradient boosting and random forest, to predict end-user electricity consumption in Switzerland. The final product is a trained gradient boosting model that takes on a future date, as well as weather data (temperature, humidity, precipitation, cloud coverage), and gives out an accurate estimate of aggregate electricity demand in Switzerland. The final model has an $R^2$ of approximately $97\%$ and a mean relative error of just under $2\%$.
+The goal of this project is to test the ability of supervised machine learning models, namely elastic net, gradient boosting and random forest, to predict end-user electricity consumption in Switzerland. The final product is a trained gradient boosting model that takes on a future date, as well as weather data (temperature, humidity, precipitation, cloud coverage), and gives out an accurate estimate of aggregate electricity demand in Switzerland. The final model has an $R^2$ of approximately 97% and a mean relative error of just under 2%.
 
 <br>
 
@@ -20,7 +20,7 @@ For this project, the programming language R was used with the _tidymodels_ pack
 
 ### Data
 
-The electricity demand data comes from [Swissgrid](https://www.swissgrid.ch/en/home/operation/grid-data/generation.html) and is denoted in $kwh$. Additionally, historical weather data is used as an additional predictor, which has been retrieved from [Swiss NBCN](https://data.geo.admin.ch/ch.meteoschweiz.klima/nbcn-tageswerte/liste-download-nbcn-d.csv). The target variable is daily electricity demand denoted in $MWh$. The training/testing split is 10 years to 1 year.
+The electricity demand data comes from [Swissgrid](https://www.swissgrid.ch/en/home/operation/grid-data/generation.html) and is denoted in $kwh$. Additionally, historical weather data is used as an additional predictor, which has been retrieved from [Swiss NBCN](https://data.geo.admin.ch/ch.meteoschweiz.klima/nbcn-tageswerte/liste-download-nbcn-d.csv). The target variable is daily electricity demand denoted in $mwh$. The training/testing split is 10 years to 1 year.
 
 <p align="center">
 <img src="Graphics/Split.png" alt="training/testing split" width="600px"/>
