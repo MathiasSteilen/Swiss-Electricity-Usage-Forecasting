@@ -8,7 +8,7 @@ The detailed report of this project was hosted on [RPubs](https://rpubs.com/Math
 
 ### Description
 
-The goal of this project is to test the ability of supervised machine learning models, namely elastic net, gradient boosting and random forest, to predict end-user electricity consumption in Switzerland. The final product is a trained gradient boosting model that takes on a future date, as well as weather data (temperature, humidity, precipitation, cloud coverage), and gives out an accurate estimate of aggregate electricity demand in Switzerland. The final model has an $R^2$ of approximately 97% and a mean absolute percentage error ($MAPE$) of just under 2%.
+The goal of this project is to test the ability of supervised machine learning models, namely elastic net, gradient boosting and random forest, to predict end-user electricity consumption in Switzerland. The final product is a trained gradient boosting model that takes on a future date, as well as weather data (temperature, humidity, precipitation, cloud coverage), and gives out an accurate estimate of aggregate electricity demand in Switzerland. The final model has an $R^2$ of approximately 97% and a mean absolute percentage error (MAPE) of just under 2%.
 
 <br>
 
