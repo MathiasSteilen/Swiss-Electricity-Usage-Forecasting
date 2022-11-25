@@ -2,7 +2,7 @@
 
 ### Final Report [(Visit Link)](https://rpubs.com/MathiasSteilen/swiss-energy-forecast-supervised-ml)
 
-The detailed report of this project was hosted on [RPubs](https://rpubs.com/MathiasSteilen/swiss-energy-forecast-supervised-ml). Below, a rough overview over the results of the project is given.
+The detailed report of this project was hosted on [RPubs](https://rpubs.com/MathiasSteilen/swiss-energy-forecast-supervised-ml). Below, only a very brief overview over the results of the project is given.
 
 <br>
 
@@ -89,3 +89,64 @@ In practice, the forecast is usually much shorter than one year. Production is a
 ##### Weather readings
 
 The weather readings for the training of this model were actual values. In practice, when predicting energy demand, weather forecasts are part of the features, instead of actual values. This additional uncertainty will likely impact model performance negatively in practice.
+
+<br>
+
+
+### How To Run The Models In This Project
+
+This project is intended as a piece of research into how machine learning models can be used to predict energy demand. In theory, after cloning this repository, you could load and use the model for making your own predictions like this:
+
+```
+# Libraries
+library(tidyverse)
+library(tidymodels)
+
+# Loading Model
+gb_model <- readRDS("Data/gb_final_fit.csv")
+
+# One Holdout Observation
+example_data <- structure(
+    list(year = 2019, day_in_year = 120, date = structure(18016, class = "Date"),
+         mwh = 156760.631422, ALT_meantemp = 9.5, ALT_precipitation = 0, 
+         ALT_cloudcoverage = 75, ALT_humidity = 77.8, BAS_meantemp = 9.8, 
+         BAS_precipitation = 0, BAS_cloudcoverage = 79, BAS_humidity = 77.2, 
+         BER_meantemp = 9.5, BER_precipitation = 0, BER_humidity = 75.1, 
+         DAV_meantemp = 1.6, DAV_precipitation = 0.2, DAV_humidity = 85.5, 
+         GVE_meantemp = 11, GVE_precipitation = 0, GVE_cloudcoverage = 13, 
+         GVE_humidity = 65.7, LUG_meantemp = 16.4, LUG_precipitation = 0, 
+         LUG_cloudcoverage = 29, LUG_humidity = 38.2, LUZ_meantemp = 9.7, 
+         LUZ_precipitation = 0, LUZ_humidity = 75.8, NEU_meantemp = 10.5, 
+         NEU_precipitation = 0, NEU_humidity = 65.8, SMA_meantemp = 8.1, 
+         SMA_precipitation = 0, SMA_cloudcoverage = 88, SMA_humidity = 80.9, 
+         STG_meantemp = 6.2, STG_precipitation = 0.3, STG_humidity = 86.5, 
+         cloudcoverage = 56.8, humidity = 72.85, meantemp = 9.23, 
+         precipitation = 0.05), row.names = c(NA, -1L), 
+         class = c("tbl_df", "tbl", "data.frame")
+        )
+
+# Make Prediction On Example Observation
+gb_model %>% extract_workflow() %>% augment(NEW_DATA)
+```
+
+The problem in practice is getting the data to make predictions on: The model was trained with over 40 variables:
+
+1) Variables that are easy to obtain for the user:
+    `year`, `day_in_year`, `date`
+2) Variables that are harder to obtain: 
+    `ALT_meantemp`, `ALT_precipitation`, `ALT_cloudcoverage`, `ALT_humidity`, 
+    `BAS_meantemp`, `BAS_precipitation`, `BAS_cloudcoverage`, `BAS_humidity`,
+    `BER_meantemp`, `BER_precipitation`, `BER_humidity`, `DAV_meantemp`,
+    `DAV_precipitation`, `DAV_humidity`, `GVE_meantemp`, `GVE_precipitation`, 
+    `GVE_cloudcoverage`, `GVE_humidity`, `LUG_meantemp`, `LUG_precipitation`,
+    `LUG_cloudcoverage`, `LUG_humidity`, `LUZ_meantemp`, `LUZ_precipitation`,
+    `LUZ_humidity`, `NEU_meantemp`, `NEU_precipitation`, `NEU_humidity`, 
+    `SMA_meantemp`, `SMA_precipitation`, `SMA_cloudcoverage`, `SMA_humidity`,
+    `STG_meantemp`, `STG_precipitation`, `STG_humidity`, `cloudcoverage`,
+    `humidity`, `meantemp`, `precipitation`
+3) Target variable (no need to obtain for predictions): 
+    `mwh`
+
+All variables of type 2 come from the Swiss government, hence the user is dependent on these exact data points. As the data must be forecasts, but for the purpose of the analysis, actual data points were used, it will likely be hard to get the forecasts for every geolocation to use this model in practice. Therefore, as a disclaimer: This project (specifically, the [final report](https://rpubs.com/MathiasSteilen/swiss-energy-forecast-supervised-ml)), is intended as a piece of research instead of an implementation of a model that can immediately be deployed in practice.
+
+<br>

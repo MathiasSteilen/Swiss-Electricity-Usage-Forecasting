@@ -113,33 +113,33 @@ read_csv("Data/liste-download-nbcn-d.csv") %>%
 Therefore, I could use these URLs to access the actual weather data for selected weather stations. I stored the data for all stations of interest in the tibble _weather_data_. The weather stations I have decided for are both in densely populated areas in northern/eastern/western Switzerland, as well as in the Alps, ensuring a good representation of the whole country.
 
 ```{r, eval=FALSE}
-weather_data <- read_csv("Data/liste-download-nbcn-d.csv") %>%
-  filter(`station/location` %in% c("SMA", "GVE", "BAS", "DAV","LUG", "STG",
-                                   "ALT", "NEU", "BER", "LUZ")) %>%
-  mutate(station_data = map(`URL Previous years (verified data)`,
-                            ~ read.csv(.x, sep = ";")),
-         station_data = map(station_data,
-                            ~ select(.x, date, tre200d0, rre150d0,
-                                     nto000d0, ure200d0)),
-         station_data = map(station_data,
-                            ~ na_if(.x, "-")),
-         station_data = map(station_data,
-                            ~ .x %>%
-                              mutate(date = as.character(date),
-                                     across(c(tre200d0, rre150d0,
-                                              nto000d0, ure200d0), as.numeric)))) %>%
-  select(Station, `station/location`, Canton, station_data) %>%
-  unnest(station_data) %>%
-  mutate(date = ymd(date)) %>%
-  select(-Station, -Canton) %>% 
-  pivot_longer(c(tre200d0, rre150d0, nto000d0, ure200d0)) %>% 
-  mutate(name = case_when(
-    name == "tre200d0" ~ paste0(`station/location`,"_","meantemp"),
-    name == "rre150d0" ~ paste0(`station/location`,"_","precipitation"),
-    name == "nto000d0" ~ paste0(`station/location`,"_","cloudcoverage"),
-    name == "ure200d0" ~ paste0(`station/location`,"_","humidity"))) %>% 
-  select(-`station/location`) %>% 
-  pivot_wider(names_from = "name", values_from = "value")
+# weather_data <- read_csv("Data/liste-download-nbcn-d.csv") %>%
+#   filter(`station/location` %in% c("SMA", "GVE", "BAS", "DAV","LUG", "STG",
+#                                    "ALT", "NEU", "BER", "LUZ")) %>%
+#   mutate(station_data = map(`URL Previous years (verified data)`,
+#                             ~ read.csv(.x, sep = ";")),
+#          station_data = map(station_data,
+#                             ~ select(.x, date, tre200d0, rre150d0,
+#                                      nto000d0, ure200d0)),
+#          station_data = map(station_data,
+#                             ~ na_if(.x, "-")),
+#          station_data = map(station_data,
+#                             ~ .x %>%
+#                               mutate(date = as.character(date),
+#                                      across(c(tre200d0, rre150d0,
+#                                               nto000d0, ure200d0), as.numeric)))) %>%
+#   select(Station, `station/location`, Canton, station_data) %>%
+#   unnest(station_data) %>%
+#   mutate(date = ymd(date)) %>%
+#   select(-Station, -Canton) %>% 
+#   pivot_longer(c(tre200d0, rre150d0, nto000d0, ure200d0)) %>% 
+#   mutate(name = case_when(
+#     name == "tre200d0" ~ paste0(`station/location`,"_","meantemp"),
+#     name == "rre150d0" ~ paste0(`station/location`,"_","precipitation"),
+#     name == "nto000d0" ~ paste0(`station/location`,"_","cloudcoverage"),
+#     name == "ure200d0" ~ paste0(`station/location`,"_","humidity"))) %>% 
+#   select(-`station/location`) %>% 
+#   pivot_wider(names_from = "name", values_from = "value")
 ```
 
 ```{r, eval=FALSE, echo=FALSE}
@@ -939,6 +939,194 @@ In practice, the forecast is usually much shorter than one year. Production is a
 ##### Weather readings
 
 The weather readings for the training of this model were actual values. In practice, when predicting energy demand, weather forecasts are part of the features, instead of actual values. This additional uncertainty will likely impact model performance negatively in practice.
+
+***
+### Day Ahead Predictions With Autoregression
+***
+
+```{r}
+dt_split <- data %>% 
+  arrange(date) %>% 
+  mutate(mwh_lag1 = lag(mwh, n = 1),
+         mwh_lag2 = lag(mwh, n = 2),
+         mwh_lag3 = lag(mwh, n = 3),
+         mwh_lag4 = lag(mwh, n = 4),
+         mwh_lag5 = lag(mwh, n = 5),
+         mwh_lag6 = lag(mwh, n = 6),
+         mwh_lag7 = lag(mwh, n = 7)) %>% 
+  time_series_split(date_var = date, assess = "1 year", cumulative = T)
+
+dt_train <- training(dt_split)
+dt_test <- testing(dt_split)
+
+folds <- vfold_cv(dt_train, v = 5)  
+```
+
+
+```{r class.source = 'fold-show'}
+model_rec <- recipe(mwh ~ .,
+                    data = dt_train) %>%
+  step_date(date) %>%
+  step_holiday(date, holidays = timeDate::listHolidays("CH")) %>%
+  step_impute_mean(all_numeric_predictors()) %>% 
+  step_unknown(all_nominal_predictors()) %>% 
+  step_mutate(month = lubridate::month(date),
+              year_half = lubridate::semester(date) %>% as.factor,
+              week_day = lubridate::wday(date),
+              week_in_year = lubridate::week(date),
+              quarter = lubridate::quarter(date),
+              date_christmas = ifelse(between(day_in_year, 358, 366),
+                                      1, 0),
+              day_in_year = as.factor(day_in_year)) %>% 
+  step_rm(date) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv()
+```
+
+```{r, echo=FALSE, eval=FALSE}
+model_rec %>% prep() %>% juice() %>% glimpse()
+```
+
+```{r}
+gb_spec <- boost_tree(mtry = tune(),
+                      trees = tune(),
+                      min_n = tune(),
+                      tree_depth = tune(),
+                      learn_rate = tune(),
+                      loss_reduction = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+gb_wflow <- workflow() %>% 
+  add_recipe(model_rec) %>% 
+  add_model(gb_spec)
+
+gb_grid <- grid_latin_hypercube(finalize(mtry(), dt_train),
+                                trees(),
+                                min_n(),
+                                tree_depth(),
+                                learn_rate(),
+                                loss_reduction(),
+                                size = 200)
+```
+
+```{r, eval=FALSE}
+# Gradient Boosting
+unregister_dopar <- function() {
+  env <- foreach:::.foreachGlobals
+  rm(list=ls(name=env), pos=env)
+}
+
+start_time <- Sys.time()
+
+cl <- makePSOCKcluster(6)
+registerDoParallel(cl)
+
+gb_tune <- tune_grid(object = gb_wflow,
+                     grid = gb_grid,
+                     resamples = folds,
+                     metrics = metric_set(rsq, rmse, mae, mape, mase),
+                     control = control_grid(save_pred = TRUE))
+
+Sys.time() - start_time
+
+stopCluster(cl)
+unregister_dopar()
+```
+
+```{r}
+gb_final_fit <- gb_wflow %>% 
+  finalize_workflow(select_best(gb_tune, metric = "rmse")) %>% 
+  last_fit(dt_split)
+```
+
+```{r, fig.width=8, fig.height=4, dpi=300, dev="png", warning=FALSE, message=FALSE}
+gb_final_fit %>% 
+  collect_predictions() %>% 
+  ggplot(aes(mwh, .pred)) +
+  geom_point(alpha = 0.5, size = 1.5, colour = "midnightblue") +
+  labs(title = "Out-Of-Sample Model Performance",
+       y = "Estimate",
+       x = "Truth") +
+  geom_abline(colour = "grey50", lty = "dashed") +
+  scale_y_continuous(labels = scales::comma_format(suffix = " MWh")) +
+  scale_x_continuous(labels = scales::comma_format(suffix = " MWh")) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"))
+```
+
+```{r}
+evaluation_metrics <- metric_set(rsq, rmse, mae, mape, mase)
+
+gb_final_fit %>% 
+  collect_predictions() %>% 
+  evaluation_metrics(truth = mwh, estimate = .pred) %>% 
+  select(-.estimator) %>% 
+  pivot_wider(names_from = ".metric", values_from = ".estimate")
+```
+
+<!-- TBD: Include this in report? -->
+
+At this stage, I can plot the actual time series against the predictions of the model, in order to see difference in time:
+
+```{r, fig.width=8, fig.height=4.95, dpi=300, dev="png", warning=FALSE, message=FALSE}
+gb_final_fit %>% 
+  extract_workflow() %>% 
+  augment(dt_test) %>% 
+  transmute(date, prediction = .pred, actual = mwh) %>% 
+  pivot_longer(-c(date)) %>% 
+  ggplot(aes(date, value, colour = name)) +
+  geom_line(alpha = 0.75, size = 0.75) +
+  labs(title = "Out-Of-Sample Time Series",
+       y = NULL,
+       x = NULL,
+       colour = NULL) +
+  ggsci::scale_colour_jama() +
+  scale_y_continuous(labels = scales::comma_format(suffix = " MWh")) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"))
+```
+
+```{r, eval=FALSE, echo=FALSE}
+ggsave(filename = "C:/Users/mathi/Downloads/last_fit.png", dpi = 320, units = "cm", width = 25, height = 10)
+```
+
+```{r, fig.width=8, fig.height=4.95, dpi=300, dev="png", warning=FALSE, message=FALSE}
+gb_final_fit %>% 
+  extract_workflow() %>% 
+  augment(dt_test) %>% 
+  mutate(delta = .pred/mwh-1,
+         exceedance = ifelse(abs(delta) > 0.05, 
+                             ">5%", "<=5%") %>% as.factor()) %>% 
+  ungroup() %>% 
+  ggplot(aes(date, delta, colour = exceedance)) +
+  geom_point(alpha = 0.5) +
+  annotate("rect", xmin = ymd("20180101"), xmax = ymd("20201231"),
+           ymin = -0.05, ymax = 0.05, alpha = .1, fill = "dodgerblue") +
+  geom_hline(yintercept = 0.05, colour = "dodgerblue", lty = "dashed") +
+  geom_hline(yintercept = -0.05, colour = "dodgerblue", lty = "dashed") +
+  facet_wrap(~ model, nrow = 2) +
+  labs(title = "Out-Of-Sample Delta In Percent",
+       subtitle = "Delta calculated as deviation of the estimate from the actual value.",
+       y = "Delta",
+       x = NULL,
+       colour = "Exceedance") +
+  scale_colour_manual(values = c("dodgerblue", "firebrick")) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     limits = c(-0.25, 0.25)) +
+  coord_cartesian(xlim = c(ymd("20190101"), ymd("20191231"))) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(face = "italic", size = 12,
+                                     colour = "grey50"),
+        legend.position = "bottom")
+```
+
+<br>
 
 &nbsp;
 <hr />
